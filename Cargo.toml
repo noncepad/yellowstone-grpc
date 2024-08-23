@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "examples/rust", # 1.13.0+solana.1.17.33
-    "yellowstone-grpc-client", # 1.15.0+solana.1.17.33
-    "yellowstone-grpc-geyser", # 1.14.2+solana.1.17.33
-    "yellowstone-grpc-proto", # 1.14.0+solana.1.17.33
-    "yellowstone-grpc-tools", # 1.0.0-rc.11+solana.1.17.33
+    "examples/rust", # 1.13.0+solana.1.18.15
+    "yellowstone-grpc-client", # 1.15.0+solana.1.18.15
+    "yellowstone-grpc-geyser", # 1.15.0+solana.1.18.15
+    "yellowstone-grpc-proto", # 1.14.0+solana.1.18.15
+    "yellowstone-grpc-tools", # 1.0.0-rc.11+solana.1.18.15
 ]
 
 [workspace.package]
@@ -30,7 +30,9 @@ chrono = "0.4.26"
 clap = "4.3.0"
 const-hex = "1.6.2"
 crossbeam-channel = "0.5.8"
+deepsize = "0.2.0"
 env_logger = "0.10.0"
+etcd-client = "0.12.4"
 futures = "0.3.24"
 git-version = "0.3.5"
 google-cloud-googleapis = "0.11.0"
@@ -41,21 +43,24 @@ http = "0.2.8"
 hyper = "0.14.27"
 json5 = "0.4.1"
 lazy_static = "1.4.0"
+local-ip-address = "0.6.1"
 log = "0.4.17"
 maplit = "1.0.2"
 prometheus = "0.13.2"
 prost = "0.12.1"
 protobuf-src = "1.1.0"
 rdkafka = "0.34.0"
+scylla = "0.13.0"
 serde = "1.0.145"
 serde_json = "1.0.86"
+serde_with = "3.7.0"
 serde_yaml = "0.9.25"
 sha2 = "0.10.7"
-solana-account-decoder = "=1.17.33"
-solana-geyser-plugin-interface = "=1.17.33"
-solana-logger = "=1.17.33"
-solana-sdk = "=1.17.33"
-solana-transaction-status = "=1.17.33"
+solana-account-decoder = "=1.18.18"
+solana-geyser-plugin-interface = "=1.18.18"
+solana-logger = "=1.18.18"
+solana-sdk = "=1.18.18"
+solana-transaction-status = "=1.18.18"
 spl-token-2022 = "0.9.0"
 thiserror = "1.0"
 tokio = "1.21.2"
@@ -65,9 +70,10 @@ tonic-build = "0.10.2"
 tonic-health = "0.10.2"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+uuid = "1.8.0"
 vergen = "8.2.1"
-yellowstone-grpc-client = { path = "yellowstone-grpc-client", version = "=1.15.0+solana.1.17.33" }
-yellowstone-grpc-proto = { path = "yellowstone-grpc-proto", version = "=1.14.0+solana.1.17.33" }
+yellowstone-grpc-client = { path = "yellowstone-grpc-client", version = "=1.15.0+solana.1.18.15" }
+yellowstone-grpc-proto = { path = "yellowstone-grpc-proto", version = "=1.14.0+solana.1.18.15" }
 
 [profile.release]
 debug = true

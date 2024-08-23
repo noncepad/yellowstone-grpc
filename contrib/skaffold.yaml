@@ -1,0 +1,27 @@
+# To learn more about the skaffold.yaml schema visit
+# https://skaffold.dev/docs/references/yaml/
+apiVersion: skaffold/v2beta26
+kind: Config
+profiles:
+- name: dev
+  build:
+    cluster:
+      pullSecretName: regcred
+      randomDockerConfigSecret: false
+      namespace: dev
+      dockerConfig:
+        path: ~/.docker/config.json
+        secretName: ${DOCKER_PUSH_SECRET}
+    tagPolicy:
+      sha256: {}
+    artifacts:
+    - context: .
+      image: repo
+      kaniko:
+        dockerfile: contrib/repo.Dockerfile
+  deploy:
+    statusCheckDeadlineSeconds: 720
+    kubectl:
+      manifests:
+      - contrib//repo.yaml
+

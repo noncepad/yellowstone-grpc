@@ -1,6 +1,6 @@
 [package]
 name = "yellowstone-grpc-geyser"
-version = "1.14.2+solana.1.17.33"
+version = "1.15.0+solana.1.18.18"
 authors = { workspace = true }
 edition = { workspace = true }
 description = "Yellowstone gRPC Geyser Plugin"
@@ -12,6 +12,7 @@ publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
 
 [[bin]]
 name = "config-check"
@@ -47,3 +48,7 @@ anyhow = { workspace = true }
 cargo-lock = { workspace = true }
 git-version = { workspace = true }
 vergen = { workspace = true, features = ["build", "rustc"] }
+
+
+[package.metadata.deb]
+section = "net"

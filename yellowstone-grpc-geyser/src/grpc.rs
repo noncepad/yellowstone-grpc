@@ -1,6 +1,6 @@
 use {
     crate::{
-        config::{ConfigBlockFailAction, ConfigGrpc},
+        config::{ConfigBlockFailAction, ConfigGrpc, ConfigGrpcFilters},
         filters::{Filter, FilterAccountsDataSlice},
         prom::{self, DebugClientMessage, CONNECTIONS_TOTAL, MESSAGE_QUEUE_SIZE},
         version::GrpcVersionInfo,
@@ -8,7 +8,7 @@ use {
     anyhow::Context,
     log::{error, info},
     solana_geyser_plugin_interface::geyser_plugin_interface::{
-        ReplicaAccountInfoV3, ReplicaBlockInfoV3, ReplicaEntryInfo, ReplicaTransactionInfoV2,
+        ReplicaAccountInfoV3, ReplicaBlockInfoV3, ReplicaEntryInfoV2, ReplicaTransactionInfoV2,
         SlotStatus,
     },
     solana_sdk::{
@@ -34,7 +34,7 @@ use {
     },
     tokio_stream::wrappers::ReceiverStream,
     tonic::{
-        codec::CompressionEncoding,
+        service::interceptor::interceptor,
         transport::{
             server::{Server, TcpIncoming},
             Identity, ServerTlsConfig,
@@ -199,15 +199,18 @@ pub struct MessageEntry {
     pub starting_transaction_index: u64,
 }
 
-impl From<&ReplicaEntryInfo<'_>> for MessageEntry {
-    fn from(entry: &ReplicaEntryInfo) -> Self {
+impl From<&ReplicaEntryInfoV2<'_>> for MessageEntry {
+    fn from(entry: &ReplicaEntryInfoV2) -> Self {
         Self {
             slot: entry.slot,
             index: entry.index,
             num_hashes: entry.num_hashes,
             hash: entry.hash.into(),
             executed_transaction_count: entry.executed_transaction_count,
-            starting_transaction_index: 0,
+            starting_transaction_index: entry
+                .starting_transaction_index
+                .try_into()
+                .expect("failed convert usize to u64"),
         }
     }
 }
@@ -708,7 +711,9 @@ impl SlotMessages {
 
 #[derive(Debug)]
 pub struct GrpcService {
-    config: ConfigGrpc,
+    config_snapshot_client_channel_capacity: usize,
+    config_channel_capacity: usize,
+    config_filters: Arc<ConfigGrpcFilters>,
     blocks_meta: Option<BlockMetaStorage>,
     subscribe_id: AtomicUsize,
     snapshot_rx: Mutex<Option<crossbeam_channel::Receiver<Option<Message>>>>,
@@ -722,6 +727,7 @@ impl GrpcService {
         config: ConfigGrpc,
         block_fail_action: ConfigBlockFailAction,
         debug_clients_tx: Option<mpsc::UnboundedSender<DebugClientMessage>>,
+        is_reload: bool,
     ) -> anyhow::Result<(
         Option<crossbeam_channel::Sender<Option<Message>>>,
         mpsc::UnboundedSender<Arc<Message>>,
@@ -737,11 +743,11 @@ impl GrpcService {
 
         // Snapshot channel
         let (snapshot_tx, snapshot_rx) = match config.snapshot_plugin_channel_capacity {
-            Some(cap) => {
+            Some(cap) if !is_reload => {
                 let (tx, rx) = crossbeam_channel::bounded(cap);
                 (Some(tx), Some(rx))
             }
-            None => (None, None),
+            _ => (None, None),
         };
 
         // Blocks meta storage
@@ -771,17 +777,23 @@ impl GrpcService {
 
         // Create Server
         let max_decoding_message_size = config.max_decoding_message_size;
-        let service = GeyserServer::new(Self {
-            config,
+        let mut service = GeyserServer::new(Self {
+            config_snapshot_client_channel_capacity: config.snapshot_client_channel_capacity,
+            config_channel_capacity: config.channel_capacity,
+            config_filters: Arc::new(config.filters),
             blocks_meta,
             subscribe_id: AtomicUsize::new(0),
             snapshot_rx: Mutex::new(snapshot_rx),
             broadcast_tx: broadcast_tx.clone(),
             debug_clients_tx,
         })
-        .accept_compressed(CompressionEncoding::Gzip)
-        .send_compressed(CompressionEncoding::Gzip)
         .max_decoding_message_size(max_decoding_message_size);
+        for encoding in config.compression.accept {
+            service = service.accept_compressed(encoding);
+        }
+        for encoding in config.compression.send {
+            service = service.send_compressed(encoding);
+        }
 
         // Run geyser message loop
         let (messages_tx, messages_rx) = mpsc::unbounded_channel();
@@ -810,6 +822,16 @@ impl GrpcService {
 
             server_builder
                 .http2_keepalive_interval(Some(Duration::from_secs(5)))
+                .layer(interceptor(move |request: Request<()>| {
+                    if let Some(x_token) = &config.x_token {
+                        match request.metadata().get("x-token") {
+                            Some(token) if x_token == token => Ok(request),
+                            _ => Err(Status::unauthenticated("No valid auth token")),
+                        }
+                    } else {
+                        Ok(request)
+                    }
+                }))
                 .add_service(health_service)
                 .add_service(service)
                 .serve_with_incoming_shutdown(incoming, shutdown_grpc.notified())
@@ -1087,7 +1109,8 @@ impl GrpcService {
     #[allow(clippy::too_many_arguments)]
     async fn client_loop(
         id: usize,
-        mut filter: Filter,
+        endpoint: String,
+        config_filters: Arc<ConfigGrpcFilters>,
         stream_tx: mpsc::Sender<TonicResult<SubscribeUpdate>>,
         mut client_rx: mpsc::UnboundedReceiver<Option<Filter>>,
         mut snapshot_rx: Option<crossbeam_channel::Receiver<Option<Message>>>,
@@ -1095,6 +1118,24 @@ impl GrpcService {
         debug_client_tx: Option<mpsc::UnboundedSender<DebugClientMessage>>,
         drop_client: impl FnOnce(),
     ) {
+        let mut filter = Filter::new(
+            &SubscribeRequest {
+                accounts: HashMap::new(),
+                slots: HashMap::new(),
+                transactions: HashMap::new(),
+                transactions_status: HashMap::new(),
+                blocks: HashMap::new(),
+                blocks_meta: HashMap::new(),
+                entry: HashMap::new(),
+                commitment: None,
+                accounts_data_slice: Vec::new(),
+                ping: None,
+            },
+            &config_filters,
+        )
+        .expect("empty filter");
+        prom::update_subscriptions(&endpoint, None, Some(&filter));
+
         CONNECTIONS_TOTAL.inc();
         DebugClientMessage::maybe_send(&debug_client_tx, || DebugClientMessage::UpdateFilter {
             id,
@@ -1107,31 +1148,48 @@ impl GrpcService {
             info!("client #{id}: going to receive snapshot data");
 
             // we start with default filter, for snapshot we need wait actual filter first
+            let mut past_1 = false;
             while is_alive {
+                if !past_1{
+                    past_1=true;
+                    info!("client #{id}: past_1 {}",past_1);
+                }
                 match client_rx.recv().await {
                     Some(Some(filter_new)) => {
                         if let Some(msg) = filter_new.get_pong_msg() {
                             if stream_tx.send(Ok(msg)).await.is_err() {
                                 error!("client #{id}: stream closed");
                                 is_alive = false;
-                                break;
                             }
-                            continue;
+                            filter = filter_new;
+                            info!("client #{id}: 1 - filter updated");
+                            break;
+                        }else{
+                            filter = filter_new;
+                            info!("client #{id}: 2 - filter updated");
                         }
 
-                        filter = filter_new;
-                        info!("client #{id}: filter updated");
+                        // TODO: check if these 3 lines cause problems.
+                       // prom::update_subscriptions(&endpoint, Some(&filter), Some(&filter_new));
+                        //filter = filter_new;
+                        //info!("client #{id}: filter updated");
                     }
                     Some(None) => {
+                        info!("client #{id}: 2 - not alive anymore");
                         is_alive = false;
                     }
                     None => {
+                        info!("client #{id}: 2 - not alive anymore");
                         is_alive = false;
                     }
                 };
             }
-
+            past_1=false;
             while is_alive {
+                if !past_1{
+                    past_1=true;
+                    info!("client #{id}: past_2 {}",past_1);
+                }
                 let message = match snapshot_rx.try_recv() {
                     Ok(message) => {
                         MESSAGE_QUEUE_SIZE.dec();
@@ -1159,9 +1217,39 @@ impl GrpcService {
                     }
                 }
             }
+            
+            info!("client #{id}: snapshot finished - 1");
+            
+            if stream_tx.send(Ok(SubscribeUpdate{
+                filters: Vec::new(),
+                update_oneof: Some(UpdateOneof::Slot(SubscribeUpdateSlot{
+                    slot:0,
+                    parent: Some(0),
+                    status: 0,
+                })),
+            })).await.is_err() {
+                error!("client #{id}: stream closed");
+                is_alive = false;
+            }
+            info!("client #{id}: snapshot finished - 2a");
+        }else{
+            info!("client #{id}: NOT going to receive snapshot data");            
+            if stream_tx.send(Ok(SubscribeUpdate{
+                filters: Vec::new(),
+                update_oneof: Some(UpdateOneof::Slot(SubscribeUpdateSlot{
+                    slot:0,
+                    parent: Some(0),
+                    status: 0,
+                })),
+            })).await.is_err() {
+                error!("client #{id}: stream closed");
+                is_alive = false;
+            }
+            info!("client #{id}: snapshot finished - 2b");
         }
 
         if is_alive {
+            info!("client #{id}: 20 - is alive");
             'outer: loop {
                 tokio::select! {
                     message = client_rx.recv() => {
@@ -1175,6 +1263,7 @@ impl GrpcService {
                                     continue;
                                 }
 
+                                prom::update_subscriptions(&endpoint, Some(&filter), Some(&filter_new));
                                 filter = filter_new;
                                 DebugClientMessage::maybe_send(&debug_client_tx, || DebugClientMessage::UpdateFilter { id, filter: Box::new(filter.clone()) });
                                 info!("client #{id}: filter updated");
@@ -1203,10 +1292,15 @@ impl GrpcService {
                         };
 
                         if commitment == filter.get_commitment_level() {
+                            //info!("client #{id}: 21a - sent");
                             for message in messages.iter() {
+                                //info!("client #{id}: 21b - sent");
                                 for message in filter.get_update(message, Some(commitment)) {
+                                    //info!("client #{id}: 21c - sent");
                                     match stream_tx.try_send(Ok(message)) {
-                                        Ok(()) => {}
+                                        Ok(()) => {
+                                            info!("client #{id}: 21d - sent");
+                                        }
                                         Err(mpsc::error::TrySendError::Full(_)) => {
                                             error!("client #{id}: lagged to send update");
                                             tokio::spawn(async move {
@@ -1237,6 +1331,7 @@ impl GrpcService {
 
         CONNECTIONS_TOTAL.dec();
         DebugClientMessage::maybe_send(&debug_client_tx, || DebugClientMessage::Removed { id });
+        prom::update_subscriptions(&endpoint, Some(&filter), None);
         info!("client #{id}: removed");
         drop_client();
     }
@@ -1251,27 +1346,11 @@ impl Geyser for GrpcService {
         mut request: Request<Streaming<SubscribeRequest>>,
     ) -> TonicResult<Response<Self::SubscribeStream>> {
         let id = self.subscribe_id.fetch_add(1, Ordering::Relaxed);
-        let filter = Filter::new(
-            &SubscribeRequest {
-                accounts: HashMap::new(),
-                slots: HashMap::new(),
-                transactions: HashMap::new(),
-                transactions_status: HashMap::new(),
-                blocks: HashMap::new(),
-                blocks_meta: HashMap::new(),
-                entry: HashMap::new(),
-                commitment: None,
-                accounts_data_slice: Vec::new(),
-                ping: None,
-            },
-            &self.config.filters,
-        )
-        .expect("empty filter");
         let snapshot_rx = self.snapshot_rx.lock().await.take();
         let (stream_tx, stream_rx) = mpsc::channel(if snapshot_rx.is_some() {
-            self.config.snapshot_client_channel_capacity
+            self.config_snapshot_client_channel_capacity
         } else {
-            self.config.channel_capacity
+            self.config_channel_capacity
         });
         let (client_tx, client_rx) = mpsc::unbounded_channel();
         let notify_exit1 = Arc::new(Notify::new());
@@ -1308,7 +1387,13 @@ impl Geyser for GrpcService {
             }
         });
 
-        let config_filters_limit = self.config.filters.clone();
+        let endpoint = request
+            .metadata()
+            .get("x-endpoint")
+            .and_then(|h| h.to_str().ok().map(|s| s.to_string()))
+            .unwrap_or_else(|| "".to_owned());
+
+        let config_filters = Arc::clone(&self.config_filters);
         let incoming_stream_tx = stream_tx.clone();
         let incoming_client_tx = client_tx;
         let incoming_exit = Arc::clone(&notify_exit2);
@@ -1323,7 +1408,7 @@ impl Geyser for GrpcService {
                     }
                     message = request.get_mut().message() => match message {
                         Ok(Some(request)) => {
-                            if let Err(error) = match Filter::new(&request, &config_filters_limit) {
+                            if let Err(error) = match Filter::new(&request, &config_filters) {
                                 Ok(filter) => match incoming_client_tx.send(Some(filter)) {
                                     Ok(()) => Ok(()),
                                     Err(error) => Err(error.to_string()),
@@ -1352,7 +1437,8 @@ impl Geyser for GrpcService {
 
         tokio::spawn(Self::client_loop(
             id,
-            filter,
+            endpoint,
+            Arc::clone(&self.config_filters),
             stream_tx,
             client_rx,
             snapshot_rx,
@@ -1381,13 +1467,14 @@ impl Geyser for GrpcService {
             blocks_meta
                 .get_block(
                     |block| {
-                        block.block_height.map(|last_valid_block_height| {
-                            GetLatestBlockhashResponse {
+                        block
+                            .block_height
+                            .map(|block_height| GetLatestBlockhashResponse {
                                 slot: block.slot,
                                 blockhash: block.blockhash.clone(),
-                                last_valid_block_height,
-                            }
-                        })
+                                last_valid_block_height: block_height
+                                    + MAX_RECENT_BLOCKHASHES as u64,
+                            })
                     },
                     request.get_ref().commitment,
                 )

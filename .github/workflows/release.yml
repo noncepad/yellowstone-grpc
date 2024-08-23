@@ -61,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsasl2-dev
+          sudo apt-get install -y libsasl2-dev protobuf-compiler
 
       - name: Check Solana version
         run: |
@@ -84,7 +84,8 @@ jobs:
             target/release/client.d \
             target/release/config-check.d \
             target/release/grpc-google-pubsub.d \
-            target/release/grpc-kafka.d
+            target/release/grpc-kafka.d \
+            target/release/grpc-scylladb.d
 
       - name: Remove debug information
         run: |
@@ -92,7 +93,8 @@ jobs:
             target/release/client \
             target/release/config-check \
             target/release/grpc-google-pubsub \
-            target/release/grpc-kafka
+            target/release/grpc-kafka \
+            target/release/grpc-scylladb
 
       - name: Rename binaries
         run: |
@@ -100,6 +102,7 @@ jobs:
           mv target/release/config-check target/release/config-check-${{ matrix.os }}
           mv target/release/grpc-google-pubsub target/release/grpc-google-pubsub-${{ matrix.os }}
           mv target/release/grpc-kafka target/release/grpc-kafka-${{ matrix.os }}
+          mv target/release/grpc-scylladb target/release/grpc-scylladb-${{ matrix.os }}
 
       - name: Rename lib for ubuntu22 release
         if: matrix.os == 'ubuntu-22.04'
@@ -123,6 +126,7 @@ jobs:
             target/release/config-check*
             target/release/grpc-google-pubsub*
             target/release/grpc-kafka*
+            target/release/grpc-scylladb*
 
       - uses: actions/upload-artifact@v4
         with:
@@ -134,3 +138,4 @@ jobs:
             target/release/config-check*
             target/release/grpc-google-pubsub*
             target/release/grpc-kafka*
+            target/release/grpc-scylladb*

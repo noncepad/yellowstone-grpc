@@ -1,0 +1,51 @@
+# This Deployment manifest defines:
+# - single-replica deployment of the container image, with label "app: node-hello-world"
+# - Pod exposes port 8080
+# - specify PORT environment variable to the container process
+# Syntax reference https://kubernetes.io/docs/concepts/configuration/overview/
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yellowstone-repo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: yellowstone-repo
+  template:
+    metadata:
+      labels:
+        app: yellowstone-repo
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: repo
+          image: repo
+          resources:
+            limits:
+              memory: 64Mi
+              cpu: '0.05'
+            requests:
+              memory: 64Mi
+              cpu: '0.05'
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yellowstone-repo
+spec:
+  type: ClusterIP
+  selector:
+    app: yellowstone-repo
+  ports:
+  - name: httpfront
+    port: 80
+    targetPort: 80
+    protocol: TCP

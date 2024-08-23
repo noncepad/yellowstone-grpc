@@ -37,15 +37,11 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
-          override: true
-          profile: minimal
           components: rustfmt
 
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.RUST_STABLE }}
-          override: true
-          profile: minimal
           components: clippy, rustfmt
 
       - uses: actions/cache@v4
@@ -61,7 +57,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsasl2-dev
+          sudo apt-get install -y libsasl2-dev protobuf-compiler
 
       - name: cargo tree
         run: |
@@ -89,7 +85,7 @@ jobs:
       - name: check features in `proto`
         run: cargo check -p yellowstone-grpc-proto --all-targets --tests
       - name: check features in `tools`
-        run: cargo check -p yellowstone-grpc-tools --all-targets --tests
+        run: cargo check -p yellowstone-grpc-tools --all-targets --tests --all-features
 
       - name: Build
         run: ./ci/cargo-build-test.sh

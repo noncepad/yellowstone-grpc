@@ -1,3 +1,6 @@
+[graph]
+all-features = true
+
 [advisories]
 ignore = [
     # borsh 0.9.3
